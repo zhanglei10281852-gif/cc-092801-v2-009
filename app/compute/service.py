@@ -7,9 +7,10 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Callable
 
 from app.compute.repository import ComputeRepository
-from app.core.clock import Clock, SystemClock, to_storage
+from app.core.clock import Clock, clock_registry, to_storage
 from app.core.errors import ConflictError, NotFoundError, ValidationError
 from app.database import get_connection, transaction
+from app.maintenance.gate import claim_exempt_only, ensure_submission_allowed
 
 
 def digest(value: Any) -> str:
@@ -22,7 +23,7 @@ class ComputeOperationsService:
 
     def __init__(self, connection: sqlite3.Connection | None = None, clock: Clock | None = None) -> None:
         self.connection = connection or get_connection()
-        self.clock = clock or SystemClock()
+        self.clock = clock or clock_registry.get()
         self.repository = ComputeRepository(self.connection)
 
     def list_templates(self) -> list[dict[str, Any]]:
@@ -62,6 +63,7 @@ class ComputeOperationsService:
                 if existing["parameter_digest"] != parameter_digest:
                     raise ConflictError("同一幂等键对应了不同的计算参数")
                 return dict(repository.task_by_id(existing["id"]))
+            ensure_submission_allowed(connection)
             self._check_quota(repository, payload["requested_by"], now_value)
             return repository.create_task(
                 template_id=template["id"], project_code=payload["project_code"],
@@ -88,7 +90,8 @@ class ComputeOperationsService:
         lease_until = to_storage(now_value + timedelta(seconds=lease_seconds))
         with transaction(immediate=True) as connection:
             repository = ComputeRepository(connection)
-            candidate = repository.queued_candidate(capabilities, now)
+            exempt_only = claim_exempt_only(connection)
+            candidate = repository.queued_candidate(capabilities, now, exempt_only=exempt_only)
             if candidate is None:
                 return None
             cursor = connection.execute(
@@ -189,25 +192,29 @@ class ComputeOperationsService:
 
     def recover_expired(self, actor: str = "recovery-worker") -> dict[str, Any]:
         now = to_storage(self.clock.now())
+        with transaction(immediate=True) as connection:
+            return self._recover_expired_locked(ComputeRepository(connection), now, actor)
+
+    def _recover_expired_locked(self, repository: ComputeRepository, now: str, actor: str) -> dict[str, Any]:
+        """在调用方已持有的事务内回收过期租约。"""
+        connection = repository.connection
         recovered: list[int] = []
         exhausted: list[int] = []
-        with transaction(immediate=True) as connection:
-            repository = ComputeRepository(connection)
-            rows = connection.execute("SELECT * FROM compute_tasks WHERE status='running' AND lease_expires_at<>'' AND lease_expires_at<? ORDER BY id", (now,)).fetchall()
-            for task in rows:
-                before = dict(task)
-                if int(task["attempt_count"]) < int(task["max_attempts"]):
-                    status, finished_at = "queued", None
-                    recovered.append(int(task["id"]))
-                else:
-                    status, finished_at = "failed", now
-                    exhausted.append(int(task["id"]))
-                connection.execute(
-                    "UPDATE compute_tasks SET status=?,lease_owner='',lease_expires_at='',available_at=?,last_error_code='lease_expired',last_error_message='工作者租约已过期',finished_at=?,updated_at=?,version=version+1 WHERE id=?",
-                    (status, now, finished_at, now, task["id"]),
-                )
-                after = dict(repository.task_by_id(task["id"]))
-                repository.add_intervention(task_id=task["id"], actor=actor, action="lease_recovery", reason="租约过期自动恢复", before=before, after=after, batch_key="", now=now)
+        rows = connection.execute("SELECT * FROM compute_tasks WHERE status='running' AND lease_expires_at<>'' AND lease_expires_at<? ORDER BY id", (now,)).fetchall()
+        for task in rows:
+            before = dict(task)
+            if int(task["attempt_count"]) < int(task["max_attempts"]):
+                status, finished_at = "queued", None
+                recovered.append(int(task["id"]))
+            else:
+                status, finished_at = "failed", now
+                exhausted.append(int(task["id"]))
+            connection.execute(
+                "UPDATE compute_tasks SET status=?,lease_owner='',lease_expires_at='',available_at=?,last_error_code='lease_expired',last_error_message='工作者租约已过期',finished_at=?,updated_at=?,version=version+1 WHERE id=?",
+                (status, now, finished_at, now, task["id"]),
+            )
+            after = dict(repository.task_by_id(task["id"]))
+            repository.add_intervention(task_id=task["id"], actor=actor, action="lease_recovery", reason="租约过期自动恢复", before=before, after=after, batch_key="", now=now)
         return {"recovered": recovered, "exhausted": exhausted}
 
     def summary(self) -> dict[str, Any]:

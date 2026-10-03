@@ -261,6 +261,8 @@ CREATE TABLE IF NOT EXISTS compute_tasks (
     current_result_version INTEGER,
     last_error_code TEXT NOT NULL DEFAULT '',
     last_error_message TEXT NOT NULL DEFAULT '',
+    maintenance_window_id INTEGER,
+    emergency_exempt INTEGER NOT NULL DEFAULT 0 CHECK(emergency_exempt IN (0,1)),
     version INTEGER NOT NULL DEFAULT 1,
     started_at TEXT,
     finished_at TEXT,
@@ -293,6 +295,56 @@ CREATE TABLE IF NOT EXISTS compute_interventions (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_compute_interventions_task ON compute_interventions(task_id,id);
+
+CREATE TABLE IF NOT EXISTS maintenance_windows (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    version INTEGER NOT NULL DEFAULT 1,
+    reason TEXT NOT NULL,
+    planned_by TEXT NOT NULL,
+    planned_at TEXT NOT NULL,
+    drain_deadline TEXT,
+    status TEXT NOT NULL CHECK(status IN ('planned','draining','claim_paused','switched','completed','aborted','expired')),
+    entered_draining_at TEXT,
+    claim_paused_at TEXT,
+    switched_at TEXT,
+    completed_at TEXT,
+    aborted_at TEXT,
+    expired_at TEXT,
+    last_transition_at TEXT NOT NULL,
+    last_transition_by TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS maintenance_window_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    window_id INTEGER NOT NULL REFERENCES maintenance_windows(id) ON DELETE CASCADE,
+    phase TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    detail_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_maintenance_events_window ON maintenance_window_events(window_id,id);
+
+CREATE TABLE IF NOT EXISTS maintenance_emergency_exemptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    window_id INTEGER NOT NULL REFERENCES maintenance_windows(id) ON DELETE CASCADE,
+    task_id INTEGER REFERENCES compute_tasks(id) ON DELETE SET NULL,
+    requested_by TEXT NOT NULL,
+    project_code TEXT NOT NULL,
+    rule_code TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    approver TEXT NOT NULL,
+    approval_code TEXT NOT NULL,
+    outcome TEXT NOT NULL CHECK(outcome IN ('accepted','rejected')),
+    reject_reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_maintenance_exemptions_code
+    ON maintenance_emergency_exemptions(window_id, approval_code) WHERE outcome='accepted';
+CREATE INDEX IF NOT EXISTS idx_maintenance_exemptions_window ON maintenance_emergency_exemptions(window_id,id);
 '''
 
 PERMISSIONS = [
@@ -311,6 +363,7 @@ PERMISSIONS = [
     ("announcements.write", "维护公告", "announcements", "write"),
     ("audit.read", "查看审计", "audit", "read"),
     ("jobs.run", "执行后台任务", "jobs", "run"),
+    ("maintenance.operate", "维护窗口操作", "maintenance", "operate"),
 ]
 
 
@@ -359,10 +412,18 @@ def transaction(*, immediate: bool = False) -> Iterator[sqlite3.Connection]:
         connection.commit()
 
 
+def _ensure_column(connection: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+    existing = {row[1] for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in existing:
+        connection.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+
+
 def init_db() -> None:
     now = to_storage(utc_now())
     with transaction(immediate=True) as connection:
         connection.executescript(SCHEMA)
+        _ensure_column(connection, "compute_tasks", "maintenance_window_id", "maintenance_window_id INTEGER")
+        _ensure_column(connection, "compute_tasks", "emergency_exempt", "emergency_exempt INTEGER NOT NULL DEFAULT 0")
         for code, name, resource, action in PERMISSIONS:
             connection.execute(
                 "INSERT OR IGNORE INTO permissions(code,name,resource,action) VALUES(?,?,?,?)",

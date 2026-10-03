@@ -7,11 +7,13 @@ from fastapi.responses import JSONResponse
 
 from app.api import audit, auth, departments_admin, maintenance, metrics, roles, system, users, workflow
 from app.core.errors import DomainError
-from app.database import close_connection, init_db
+from app.database import close_connection, get_connection, init_db
 from app.routers import affairs, announcements, departments, petitions, residents
 from app.seismic.router import router as seismic_router
 from app.seismic.service import ensure_schema as ensure_seismic_schema
 from app.compute.router import router as compute_router
+from app.maintenance.router import router as maintenance_window_router
+from app.maintenance.service import MaintenanceWindowService
 
 
 @asynccontextmanager
@@ -19,6 +21,8 @@ async def lifespan(app: FastAPI):
     del app
     init_db()
     ensure_seismic_schema()
+    # 重启后以数据库中的窗口阶段为准恢复门禁，并让过期计划自动失效。
+    MaintenanceWindowService(get_connection()).recover_on_startup()
     yield
     close_connection()
 
@@ -51,6 +55,7 @@ app.include_router(departments.router)
 app.include_router(petitions.router)
 app.include_router(seismic_router)
 app.include_router(compute_router)
+app.include_router(maintenance_window_router)
 
 
 @app.get("/")
