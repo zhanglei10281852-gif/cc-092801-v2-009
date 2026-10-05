@@ -32,7 +32,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8432
 curl -sS http://127.0.0.1:8432/api/system/health
 ```
 
-服务订单运营接口使用 `/api/compute` 前缀，身份、角色、审计和系统接口分别位于 `/api/auth`、`/api/roles`、`/api/audit` 与 `/api/system`。
+服务订单运营接口使用 `/api/compute` 前缀，身份、角色、审计和系统接口分别位于 `/api/auth`、`/api/roles`、`/api/audit` 与 `/api/system`。带版本的维护窗口接口使用 `/api/maintenance-windows` 前缀，支持计划、进入排空、暂停领取、检查剩余租约、完成切换与异常恢复；窗口生效期间新的服务单会被拒绝（紧急白事订单按窗口声明的豁免规则放行并记录豁免审计），所有阶段变化记录操作者与原因，重复执行同一阶段幂等，过期窗口自动落为 `expired` 且不影响下一次计划。
 
 ## 测试与编译检查
 
@@ -52,6 +52,7 @@ python -m app.cli compute-demo
 
 ```text
 app/compute/       任务模板、配额、提交、领取、回执和人工干预
+app/maintenance_window/  带版本的维护窗口：阶段机、门控、豁免与异常恢复
 app/api/            登录、角色、审计和系统管理接口
 app/core/           时钟、安全、异常和分页能力
 app/repositories/   SQLite 查询与事务封装

@@ -30,6 +30,15 @@ class TaskSubmit(BaseModel):
     parameters: dict[str, Any]
     priority: int = Field(default=50, ge=0, le=100)
     idempotency_key: str = Field(min_length=6, max_length=160)
+    service_category: Literal["红事", "白事", "其他"] = "其他"
+    emergency: bool = False
+    emergency_reason: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def check_emergency_reason(self) -> "TaskSubmit":
+        if self.emergency and not (self.emergency_reason or "").strip():
+            raise ValueError("紧急订单必须填写紧急事由")
+        return self
 
 
 class TaskClaim(BaseModel):

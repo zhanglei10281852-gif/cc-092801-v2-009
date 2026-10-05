@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from app.api import audit, auth, departments_admin, maintenance, metrics, roles, system, users, workflow
 from app.core.errors import DomainError
 from app.database import close_connection, init_db
+from app.maintenance_window.router import router as maintenance_window_router
 from app.routers import affairs, announcements, departments, petitions, residents
 from app.seismic.router import router as seismic_router
 from app.seismic.service import ensure_schema as ensure_seismic_schema
@@ -44,6 +45,7 @@ app.include_router(departments_admin.router)
 app.include_router(workflow.router)
 app.include_router(metrics.router)
 app.include_router(maintenance.router)
+app.include_router(maintenance_window_router)
 app.include_router(residents.router)
 app.include_router(affairs.router)
 app.include_router(announcements.router)

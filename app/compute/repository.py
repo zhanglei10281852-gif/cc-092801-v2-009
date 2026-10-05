@@ -58,7 +58,7 @@ class ComputeRepository:
         )
         return dict(self.task_by_id(cursor.lastrowid))
 
-    def queued_candidate(self, capabilities: Iterable[str], now: str) -> sqlite3.Row | None:
+    def queued_candidate(self, capabilities: Iterable[str], now: str, restrict_to_ids: Iterable[int] | None = None) -> sqlite3.Row | None:
         capability_list = sorted(set(capabilities))
         params: list[Any] = [now]
         condition = ""
@@ -66,6 +66,13 @@ class ComputeRepository:
             placeholders = ",".join("?" for _ in capability_list)
             condition = f" AND tpl.algorithm IN ({placeholders})"
             params.extend(capability_list)
+        if restrict_to_ids is not None:
+            allowed_ids = sorted({int(task_id) for task_id in restrict_to_ids})
+            if not allowed_ids:
+                return None
+            placeholders = ",".join("?" for _ in allowed_ids)
+            condition += f" AND t.id IN ({placeholders})"
+            params.extend(allowed_ids)
         return self.connection.execute(
             "SELECT t.*,tpl.algorithm AS template_algorithm FROM compute_tasks t JOIN compute_templates tpl ON tpl.id=t.template_id WHERE t.status='queued' AND t.available_at<=?" + condition + " ORDER BY t.priority DESC,t.created_at ASC,t.id ASC LIMIT 1",
             params,

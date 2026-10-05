@@ -4,12 +4,13 @@ from fastapi import APIRouter, Query
 
 from app.compute.schemas import BatchOperation, CancelRequest, PriorityRequest, QuotaSet, RetryRequest, TaskClaim, TaskFailure, TaskResult, TaskSubmit, TemplateCreate
 from app.compute.service import ComputeOperationsService
+from app.core.clock import current_clock
 
 router = APIRouter(prefix="/api/compute", tags=["仪式服务订单运营"])
 
 
 def service() -> ComputeOperationsService:
-    return ComputeOperationsService()
+    return ComputeOperationsService(clock=current_clock())
 
 
 @router.get("/templates")

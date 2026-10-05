@@ -36,6 +36,10 @@ class ValidationError(DomainError):
     code = "validation_error"
 
 
+class MaintenanceWindowError(ConflictError):
+    code = "maintenance_window"
+
+
 class AccountLockedError(AuthenticationError):
     code = "account_locked"
 

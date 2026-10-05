@@ -293,6 +293,50 @@ CREATE TABLE IF NOT EXISTS compute_interventions (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_compute_interventions_task ON compute_interventions(task_id,id);
+
+CREATE TABLE IF NOT EXISTS maintenance_windows (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    phase TEXT NOT NULL DEFAULT 'planned' CHECK(phase IN ('planned','draining','claim_paused','lease_check','switched','completed','aborted','expired')),
+    version INTEGER NOT NULL DEFAULT 1,
+    planned_start_at TEXT NOT NULL,
+    planned_end_at TEXT NOT NULL,
+    exemption_rules_json TEXT NOT NULL DEFAULT '{}',
+    remaining_lease_snapshot INTEGER,
+    lease_checked_at TEXT,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    closed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_maintenance_windows_phase ON maintenance_windows(phase,planned_end_at);
+CREATE TABLE IF NOT EXISTS maintenance_window_transitions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    window_id INTEGER NOT NULL REFERENCES maintenance_windows(id) ON DELETE CASCADE,
+    idempotency_key TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    from_phase TEXT NOT NULL,
+    to_phase TEXT NOT NULL,
+    window_version INTEGER NOT NULL,
+    detail_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    UNIQUE(window_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_maintenance_transitions_window ON maintenance_window_transitions(window_id,id);
+CREATE TABLE IF NOT EXISTS maintenance_exemption_grants (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    window_id INTEGER NOT NULL REFERENCES maintenance_windows(id) ON DELETE CASCADE,
+    task_id INTEGER NOT NULL REFERENCES compute_tasks(id) ON DELETE CASCADE,
+    rule_code TEXT NOT NULL,
+    allow_submit INTEGER NOT NULL DEFAULT 1 CHECK(allow_submit IN (0,1)),
+    allow_claim INTEGER NOT NULL DEFAULT 0 CHECK(allow_claim IN (0,1)),
+    actor TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(window_id, task_id)
+);
 '''
 
 PERMISSIONS = [

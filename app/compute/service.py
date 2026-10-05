@@ -8,8 +8,9 @@ from typing import Any, Callable
 
 from app.compute.repository import ComputeRepository
 from app.core.clock import Clock, SystemClock, to_storage
-from app.core.errors import ConflictError, NotFoundError, ValidationError
+from app.core.errors import ConflictError, MaintenanceWindowError, NotFoundError, ValidationError
 from app.database import get_connection, transaction
+from app.maintenance_window.service import MaintenanceWindowService
 
 
 def digest(value: Any) -> str:
@@ -62,13 +63,21 @@ class ComputeOperationsService:
                 if existing["parameter_digest"] != parameter_digest:
                     raise ConflictError("同一幂等键对应了不同的计算参数")
                 return dict(repository.task_by_id(existing["id"]))
+            window_service = MaintenanceWindowService(connection, self.clock)
+            exemption = window_service.submission_gate(connection, payload)
             self._check_quota(repository, payload["requested_by"], now_value)
-            return repository.create_task(
+            task = repository.create_task(
                 template_id=template["id"], project_code=payload["project_code"],
                 requested_by=payload["requested_by"], parameters=parameters,
                 parameter_digest=parameter_digest, priority=payload["priority"],
                 idempotency_key=payload["idempotency_key"], max_attempts=template["max_attempts"], now=now,
             )
+            if exemption is not None:
+                window_service.record_exemption(
+                    connection, exemption, task_id=task["id"],
+                    actor=payload["requested_by"], reason=payload.get("emergency_reason") or "紧急豁免订单",
+                )
+            return task
 
     def list_tasks(self, *, status: str | None = None, project_code: str | None = None, requested_by: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
         return self.repository.list_tasks(status=status, project_code=project_code, requested_by=requested_by, limit=max(1, min(limit, 500)))
@@ -88,8 +97,11 @@ class ComputeOperationsService:
         lease_until = to_storage(now_value + timedelta(seconds=lease_seconds))
         with transaction(immediate=True) as connection:
             repository = ComputeRepository(connection)
-            candidate = repository.queued_candidate(capabilities, now)
+            gate = MaintenanceWindowService(connection, self.clock).claim_gate(connection)
+            candidate = repository.queued_candidate(capabilities, now, gate.exempt_task_ids if gate is not None else None)
             if candidate is None:
+                if gate is not None:
+                    raise MaintenanceWindowError("维护窗口期间暂停领取新的服务单", context={"window_code": gate.window_code, "phase": gate.phase})
                 return None
             cursor = connection.execute(
                 "UPDATE compute_tasks SET status='running',attempt_count=attempt_count+1,lease_owner=?,lease_expires_at=?,started_at=COALESCE(started_at,?),updated_at=?,version=version+1 WHERE id=? AND status='queued'",

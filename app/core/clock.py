@@ -44,3 +44,16 @@ class FrozenClock:
     def advance(self, **values: int) -> datetime:
         self.current += timedelta(**values)
         return self.current
+
+
+_clock_override: Clock | None = None
+
+
+def current_clock() -> Clock:
+    """返回当前生效时钟；测试与演示可通过 set_clock_override 注入固定时钟。"""
+    return _clock_override if _clock_override is not None else SystemClock()
+
+
+def set_clock_override(clock: Clock | None) -> None:
+    global _clock_override
+    _clock_override = clock
